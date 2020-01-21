@@ -38,7 +38,7 @@ func ProxyToScion(wr http.ResponseWriter, r2 *http.Request) {
 	var start time.Time
 	start = time.Now()
 	// Make a get request
-	resp, err := c.Get(fmt.Sprintf("https://%s:9001", *remote))
+	resp, err := c.Get(fmt.Sprintf("https://%s:9001/%s", *remote, r2.URL.Path))
 	// resp, err := c.Get("https://19-ffaa:1:c59,[127.0.0.1]:40002/image")
 	if err != nil {
 		log.Fatal("GET request failed: ", err)
@@ -90,7 +90,8 @@ func ProxyFromScion(wr http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 
 	log.Printf("%v %v", r.Method, r.RequestURI)
-	req, err = http.NewRequest(r.Method, *remote, nil)
+	remoteUrl := fmt.Sprintf("%s/%s", *remote, r.URL.Path)
+	req, err = http.NewRequest(r.Method, remoteUrl, nil)
 	for name, value := range r.Header {
 		req.Header.Set(name, value[0])
 	}
