@@ -2,6 +2,7 @@ package main
 
 import (
 	// "context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/machinebox/progress"
@@ -27,6 +28,28 @@ var direction *string
 
 // https://pragmacoders.com/blog/extending-a-struct-in-go
 
+type SCIONStats struct {
+	Local  string `json:"local"`
+	Remote string `json:"remote"`
+	Path   string `json:"path"`
+}
+
+func GetSCIONStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	scionStats := SCIONStats{
+		Local:  *local,
+		Remote: *remote,
+		Path:   http3.Path,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(scionStats)
+}
+
 func ProxyToScion(wr http.ResponseWriter, r2 *http.Request) {
 	c := http.Client{
 		Transport: &http3.SCIONRoundTripper{
@@ -38,13 +61,26 @@ func ProxyToScion(wr http.ResponseWriter, r2 *http.Request) {
 	var start time.Time
 	start = time.Now()
 	// Make a get request
-	resp, err := c.Get(fmt.Sprintf("https://%s:9001/%s", *remote, r2.URL.Path))
+	// resp, err := c.Get(fmt.Sprintf("https://%s:9001/%s", *remote, r2.URL.Path))
+	req2, _ := http.NewRequest("GET", fmt.Sprintf("https://%s:9001/%s", *remote, r2.URL.Path), nil)
+
+	for k, v := range r2.Header {
+		req2.Header.Set(k, v[0])
+	}
+	log.Println(req2.Header)
+	resp, err := c.Do(req2)
+
 	// resp, err := c.Get("https://19-ffaa:1:c59,[127.0.0.1]:40002/image")
 	if err != nil {
 		log.Fatal("GET request failed: ", err)
 	}
 	defer resp.Body.Close()
 
+	for k, v := range resp.Header {
+		wr.Header().Set(k, v[0])
+	}
+
+	log.Println(resp.Header)
 	contentLengthHeader := resp.Header.Get("Content-Length")
 	if contentLengthHeader == "" {
 		errors.New("cannot determine progress without Content-Length")
@@ -67,13 +103,14 @@ func ProxyToScion(wr http.ResponseWriter, r2 *http.Request) {
 	}()*/
 
 	if resp.StatusCode != http.StatusOK {
-		log.Fatal("Received status ", resp.Status)
+		log.Println("Received status %d", resp.Status)
 	}
+	log.Println(resp.Header)
 
 	fmt.Println("Content-Length: ", size)
 	fmt.Println("Content-Type: ", resp.Header.Get("Content-Type"))
 
-	wr.WriteHeader(200)
+	wr.WriteHeader(resp.StatusCode)
 	_, err = io.Copy(wr, req)
 	// log.Println(err)
 	duration := time.Since(start)
@@ -90,14 +127,16 @@ func ProxyFromScion(wr http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 
 	log.Printf("%v %v", r.Method, r.RequestURI)
-	remoteUrl := fmt.Sprintf("%s/%s", *remote, r.URL.Path)
+	remoteUrl := fmt.Sprintf("%s%s", *remote, r.URL.Path)
 	req, err = http.NewRequest(r.Method, remoteUrl, nil)
 	for name, value := range r.Header {
 		req.Header.Set(name, value[0])
 	}
 
+	log.Println(req.Header)
 	resp, err = client.Do(req)
 
+	log.Println(resp.Header)
 	// combined for GET/POST
 	if err != nil {
 		http.Error(wr, err.Error(), http.StatusInternalServerError)
@@ -113,10 +152,10 @@ func ProxyFromScion(wr http.ResponseWriter, r *http.Request) {
 
 func main() {
 
-	local = flag.String("local", "", "The address on which the server will be listening")
-	localurl = flag.String("localurl", "", "The address on which the server will be listening")
-	remote = flag.String("remote", "", "The address on which the server will be requested")
-	direction = flag.String("direction", "", "From ip to scion or from scion to ip")
+	local = flag.String("local", "", "The SCION address on which the server will be listening")
+	localurl = flag.String("localurl", "", "The local HTTP address on which the server will be listening")
+	remote = flag.String("remote", "", "The SCION address on which the server will be requested")
+	direction = flag.String("direction", "", "From normal to scion or from scion to normal")
 	// var port = flag.Uint("p", 9001, "port the server listens on (only relevant if local address not specified)")
 	var tlsCert = flag.String("cert", "tls.pem", "Path to TLS pemfile")
 	var tlsKey = flag.String("key", "tls.key", "Path to TLS keyfile")
@@ -137,6 +176,7 @@ func main() {
 		l4 := addr.NewL4UDPInfo(uint16(9001))
 		raddr.Host.L4 = l4
 		// ChoosePathByMetric(Shortest, laddr, raddr)
+		http.HandleFunc("/__stats", GetSCIONStats)
 		http.HandleFunc("/", ProxyToScion)
 		log.Fatal(http.ListenAndServe(*localurl, nil))
 	} else {
